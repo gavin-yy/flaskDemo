@@ -1,0 +1,21 @@
+version: '3'
+services:
+  master:
+    image: 'redis:v1'
+    container_name: redis-master
+    command: redis-server --requirepass **ll  --masterauth **ll
+    ports:
+      - '63890:6379'
+    volumes:
+      - /home/lighthouse/server/redis-data/01:/data
+
+  slave:
+    image: 'redis:v1'
+    container_name: redis-slave-1
+    command: redis-server --slaveof redis-master 6379 --requirepass **ll --masterauth **ll
+    ports:
+      - '63891:6379'
+    volumes:
+      - /home/lighthouse/server/redis-data/02:/data
+
+

@@ -1,109 +1,273 @@
-# flaskDemo
 
-本接口项目的技术选型：Python+Flask+MySQL+Redis，通过 Python+Falsk 来开发接口，使用 MySQL 来存储用户信息，使用 Redis 用于存储token，目前为纯后端接口，暂无前端界面，可通过 Postman、Jmeter、Fiddler 等工具访问请求接口。
+为了扩展单点redis，redis 可以部署为主从模式，主节点处理写入请求，主和从节点都可以处理读请求。对于读请求明显多余写请求的应用，这种方式很适合。
 
-## 项目部署
+哨兵节点的作用：监控各个redis节点，在master节点离线后，自动将slave节点切换为master节点，完成failover同步动作，避免了人工手动切换的麻烦。（可以认为提供了高可用性吧）
 
-首先，下载项目源码后，在根目录下找到 requirements.txt 文件，然后通过 pip 工具安装 requirements.txt 依赖，执行命令：
+应用端(一般是web服务)具体读写哪个redis节点，是由应用端自己控制的，需要从sentinel节点处获取master和slave节点信息。
+典型步骤:
+写请求： 从sentinel 节点查询到master节点的地址，写请求发送到master节点处理。 master节点处理完成后，将数据同步到slave节点。
+读请求： 从sentinel 节点查询到slave节点的地址，读请求发送到slave节点。
 
+
+![[attachments/redis-1.png]]
+
+
+
+
+在不同容器中，部署redis和sentinel节点，熟悉redis的主从模式
+
+参考：
+https://blog.csdn.net/weixin_44344089/article/details/127651129
+
+![[attachments/redis-2.png]]
+
+## redis
+
+使用python image作为基础，安装redis服务
 ```
-pip3 install -r requirements.txt
-```
+lighthouse@VM-8-8-ubuntu:~/server/redis$ cat Dockerfile
+FROM python
 
-接着，将项目部署起来，在本项目中其实就是利用 Python 执行 app.py 文件，以下为我在Linux上的部署命令。
+LABEL description="python with docker"
 
-```
-# /root/flaskDemo/app.py表示项目根路径下的app.py启动入口文件路径
-# /root/flaskDemo/flaskDemo.log表示输出的日志文件路径
-nohup python3 /root/flaskDemo/app.py >/root/flaskDemo/flaskDemo.log 2>&1 &
-```
 
-## 数据库设计
+RUN apt-get update && \
+    apt-get install redis-server -y &&\
+    apt-get install redis-sentinel
 
-数据库建表语句如下：
-
-```
-CREATE TABLE `user` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
-  `username` varchar(20) NOT NULL,
-  `password` varchar(255) NOT NULL,
-  `role` tinyint(1) NOT NULL,
-  `sex` tinyint(1) DEFAULT NULL,
-  `telephone` varchar(255) NOT NULL,
-  `address` varchar(255) DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `telephone` (`telephone`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8;
-```
-
-user表中各字段对应含义如下：
-
-```
-id：用户id号，自增长
-username：用户名
-password：密码
-role：用户角色，0表示管理员用户，1表示普通用户
-sex：性别，0表示男性，1表示女性，允许为空
-telephone：手机号
-address：联系地址，允许为空
+RUN echo 'build complete'
 ```
 
-## 接口请求示例
 
-- 获取所有用户接口请求示例（可直接在浏览器输入栏请求）：
-
+启动redis服务节点，一个名称为master，一个名称为slave
 ```
-请求方式：GET
-请求地址：http://127.0.0.1:9999/users
-```
+lighthouse@VM-8-8-ubuntu:~/server/redis$ cat docker-compose.yaml
+version: '3'
+services:
+  master:
+    image: 'redis:v1'
+    container_name: redis-master
+    command: redis-server --requirepass **ll  --masterauth **ll
+    ports:
+      - '63890:6379'
+    volumes:
+      - /home/lighthouse/server/redis-data/01:/data
 
-- 获取wintest用户接口请求示例（可直接在浏览器输入栏请求）：
-
-```
-请求方式：GET
-请求地址：http://127.0.0.1:9999/users/wintest
-```
-
-- 用户注册接口请求示例：
-
-```
-请求方式：POST
-请求地址：http://127.0.0.1:9999/register
-请求头：
-Content-Type: application/json
-
-Body：{"username": "wintest5", "password": "123456", "sex": "1", "telephone":"13500010005", "address": "上海市黄浦区"}
+  slave:
+    image: 'redis:v1'
+    container_name: redis-slave-1
+    command: redis-server --slaveof redis-master 6379 --requirepass **ll --masterauth **ll
+    ports:
+      - '63891:6379'
+    volumes:
+      - /home/lighthouse/server/redis-data/02:/data
 ```
 
-- 用户登录接口请求示例：
-
+构建docker image, 命令如下：
 ```
-请求方式：POST
-请求地址：http://127.0.0.1:9999/login
-请求头：
-Content-Type: application/x-www-form-urlencoded
-
-Body：username=wintest&password=123456
+docker build -t redis:v1 .
 ```
 
-- 修改用户接口请求示例（ token 可以从用户登录成功后的接口返回数据中获取）：
 
+
+运行两个redis节点
 ```
-请求方式：PUT
-请求地址：http://127.0.0.1:9999/update/user/3
-请求头：
-Content-Type: application/json
-
-Body：{"admin_user": "wintest", "token": "f54f9d6ebba2c75d45ba00a8832cb593", "sex": "1", "address": "广州市天河区", "password": "12345678", "telephone": "13500010003"}
+docker-compose up -d
 ```
 
-- 删除用户接口请求示例（ token 可以从用户登录成功后的接口返回数据中获取）：：
+## sentinel
+
 
 ```
-请求方式：POST
-请求地址：http://127.0.0.1:9999/delete/user/test
-请求头：
-Content-Type: application/json
+特别注意：
+1. 需要映射整个conf目录，其设置目录为可读写
+chomd -R 0777 /home/lighthouse/server/sentinel
+2. 使用默认的redis_default网络，这样就sentinel可以访问redis服务器
 
-Body：{"admin_user": "wintest", "token": "wintest1587830406"}
+lighthouse@VM-8-8-ubuntu:~/server/sentinel$ cat docker-compose.yml
+version: '3'
+
+services:
+  redis-sentinel-1:
+    image: 'redis:v1'
+    container_name: redis-sentinel-1
+    ports:
+      - 26379:26379
+    command: redis-sentinel /usr/local/etc/redis/sentinel01.conf
+    volumes:
+      - /home/lighthouse/server/sentinel/conf:/usr/local/etc/redis
+      - /home/lighthouse/server/sentinel/data:/data
+
+networks:
+  default:
+    external:
+      name: redis_default
 ```
+
+
+```
+lighthouse@VM-8-8-ubuntu:~/server/sentinel$ cat sentinel1.conf
+port 26379
+dir /tmp
+logfile "/data/redis-sentinel-1.log"
+sentinel monitor mymaster 172.19.0.2 6379 1
+sentinel auth-pass mymaster **ll
+sentinel down-after-milliseconds mymaster 30000
+sentinel parallel-syncs mymaster 1
+sentinel failover-timeout mymaster 180000
+```
+
+
+运行：
+```
+lighthouse@VM-8-8-ubuntu:~/server/sentinel$ docker-compose up -d
+Creating redis-sentinel-1 ... done
+
+查看sentinel日志: 日志文件映射到host了。
+cat data/redis-sentinel-1.log
+1:X 07 Feb 2025 07:35:05.261 # oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+1:X 07 Feb 2025 07:35:05.261 # Redis version=7.0.15, bits=64, commit=00000000, modified=0, pid=1, just started
+1:X 07 Feb 2025 07:35:05.261 # Configuration loaded
+1:X 07 Feb 2025 07:35:05.262 * monotonic clock: POSIX clock_gettime
+1:X 07 Feb 2025 07:35:05.263 * Running mode=sentinel, port=26379.
+1:X 07 Feb 2025 07:35:05.271 * Sentinel new configuration saved on disk
+1:X 07 Feb 2025 07:35:05.271 # Sentinel ID is 582da98968154be52de45258ce46a7fee879d787
+1:X 07 Feb 2025 07:35:05.271 # +monitor master mymaster 172.19.0.2 6379 quorum 1
+1:X 07 Feb 2025 07:35:05.272 * +slave slave 172.19.0.3:6379 172.19.0.3 6379 @ mymaster 172.19.0.2 6379
+1:X 07 Feb 2025 07:35:05.277 * Sentinel new configuration saved on disk
+```
+
+sentinel会修改原始的sentinel01.conf配置文件
+`Generated by CONFIG REWRITE` 部分就是程序修改的结果。
+
+```
+
+lighthouse@VM-8-8-ubuntu:~/server/sentinel/conf$ cat sentinel01.conf
+port 26379
+dir "/tmp"
+logfile "/data/redis-sentinel-1.log"
+sentinel monitor mymaster 172.19.0.2 6379 1
+sentinel auth-pass mymaster **ll
+
+# Generated by CONFIG REWRITE
+protected-mode no
+latency-tracking-info-percentiles 50 99 99.9
+user default on nopass ~* &* +@all
+sentinel myid 582da98968154be52de45258ce46a7fee879d787
+sentinel config-epoch mymaster 0
+sentinel leader-epoch mymaster 0
+sentinel current-epoch 0
+
+sentinel known-replica mymaster 172.19.0.3 6379
+
+```
+
+进入sentinel节点查看：
+
+```
+docker exec -it redis-sentinel-1 bash
+
+root@95e33fe3b5f6:/# redis-cli -p 26379
+127.0.0.1:26379>
+127.0.0.1:26379> SENTINEL REPLICAS mymaster
+1)  1) "name"
+    2) "172.19.0.3:6379"
+    3) "ip"
+    4) "172.19.0.3"
+    5) "port"
+    6) "6379"
+    7) "runid"
+    8) "c3985f92e88e9d3fc05c4affec4577d9fa8e184f"
+    9) "flags"
+   10) "slave"
+   11) "link-pending-commands"
+   12) "0"
+   13) "link-refcount"
+   14) "1"
+   15) "last-ping-sent"
+   16) "0"
+   17) "last-ok-ping-reply"
+   18) "501"
+   19) "last-ping-reply"
+   20) "501"
+   21) "down-after-milliseconds"
+   22) "30000"
+   23) "info-refresh"
+   24) "4267"
+   25) "role-reported"
+   26) "slave"
+   27) "role-reported-time"
+   28) "1108426"
+   29) "master-link-down-time"
+   30) "0"
+   31) "master-link-status"
+   32) "ok"
+   33) "master-host"
+   34) "172.19.0.2"
+   35) "master-port"
+   36) "6379"
+   37) "slave-priority"
+   38) "100"
+   39) "slave-repl-offset"
+   40) "101684"
+   41) "replica-announced"
+   42) "1"
+
+```
+
+## 模拟master故障
+
+停止master的运行：
+```
+lighthouse@VM-8-8-ubuntu:~/server/redis$ docker-compose pause master
+Pausing redis-master ... done
+lighthouse@VM-8-8-ubuntu:~/server/redis$ docker-compose ps
+    Name                   Command               State                      Ports
+----------------------------------------------------------------------------------------------------
+redis-master    redis-server --requirepass ...   Paused   0.0.0.0:63890->6379/tcp,:::63890->6379/tcp
+redis-slave-1   redis-server --slaveof red ...   Up       0.0.0.0:63891->6379/tcp,:::63891->6379/tcp
+```
+
+可以看到sentinel的日志：选择了新的redis节点作为master：
+ +promoted-slave slave 172.19.0.3:6379 172.19.0.3 6379 @ mymaster 172.19.0.2 6379
+
+```
+1:X 07 Feb 2025 07:35:05.272 * +slave slave 172.19.0.3:6379 172.19.0.3 6379 @ mymaster 172.19.0.2 6379
+1:X 07 Feb 2025 07:35:05.277 * Sentinel new configuration saved on disk
+1:X 07 Feb 2025 08:00:24.994 # +sdown master mymaster 172.19.0.2 6379
+1:X 07 Feb 2025 08:00:24.994 # +odown master mymaster 172.19.0.2 6379 #quorum 1/1
+
+1:X 07 Feb 2025 08:00:24.994 # +new-epoch 1
+1:X 07 Feb 2025 08:00:24.994 # +try-failover master mymaster 172.19.0.2 6379
+1:X 07 Feb 2025 08:00:24.999 * Sentinel new configuration saved on disk
+1:X 07 Feb 2025 08:00:24.999 # +vote-for-leader 582da98968154be52de45258ce46a7fee879d787 1
+1:X 07 Feb 2025 08:00:24.999 # +elected-leader master mymaster 172.19.0.2 6379
+1:X 07 Feb 2025 08:00:24.999 # +failover-state-select-slave master mymaster 172.19.0.2 6379
+1:X 07 Feb 2025 08:00:25.052 # +selected-slave slave 172.19.0.3:6379 172.19.0.3 6379 @ mymaster 172.19.0.2 6379
+1:X 07 Feb 2025 08:00:25.052 * +failover-state-send-slaveof-noone slave 172.19.0.3:6379 172.19.0.3 6379 @ mymaster 172.19.0.2 6379
+1:X 07 Feb 2025 08:00:25.152 * +failover-state-wait-promotion slave 172.19.0.3:6379 172.19.0.3 6379 @ mymaster 172.19.0.2 6379
+1:X 07 Feb 2025 08:00:26.009 * Sentinel new configuration saved on disk
+1:X 07 Feb 2025 08:00:26.009 # +promoted-slave slave 172.19.0.3:6379 172.19.0.3 6379 @ mymaster 172.19.0.2 6379
+1:X 07 Feb 2025 08:00:26.009 # +failover-state-reconf-slaves master mymaster 172.19.0.2 6379
+1:X 07 Feb 2025 08:00:26.079 # +failover-end master mymaster 172.19.0.2 6379
+1:X 07 Feb 2025 08:00:26.080 # +switch-master mymaster 172.19.0.2 6379 172.19.0.3 6379
+1:X 07 Feb 2025 08:00:26.080 * +slave slave 172.19.0.2:6379 172.19.0.2 6379 @ mymaster 172.19.0.3 6379
+1:X 07 Feb 2025 08:00:26.086 * Sentinel new configuration saved on disk
+1:X 07 Feb 2025 08:00:56.146 # +sdown slave 172.19.0.2:6379 172.19.0.2 6379 @ mymaster 172.19.0.3 6379
+```
+
+0.2 原master再次启动后，作为slave节点运行
+```
+1:X 07 Feb 2025 08:02:43.680 # -sdown slave 172.19.0.2:6379 172.19.0.2 6379 @ mymaster 172.19.0.3 6379
+1:X 07 Feb 2025 08:02:53.693 * +convert-to-slave slave 172.19.0.2:6379 172.19.0.2 6379 @ mymaster 172.19.0.3 6379
+```
+
+
+## 其他
+
+https://www.cnblogs.com/kevingrace/p/9004460.html
+
+
+## web 服务器使用redis
+
+查看web目录的readme
